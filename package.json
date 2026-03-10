@@ -3,14 +3,29 @@
   "version": "1.0.0",
   "description": "Vite plugin for detecting and auto-replacing untranslated Chinese strings in Vue/JS/JSX files at pre-commit stage.",
   "type": "module",
-  "main": "index.js",
+  "main": "dist/index.js",
   "exports": {
-    ".": "./index.js",
-    "./check-i18n": "./check-i18n.js"
+    ".": "./dist/index.js",
+    "./check-i18n": "./dist/check-i18n.js"
   },
   "bin": {
-    "i18n-check": "./check-i18n.js"
+    "i18n-check": "./dist/check-i18n.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "rollup -c",
+    "prepublishOnly": "npm run build && nrm use ak && npm publish"
+  },
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-terser": "^0.4.4",
+    "rollup": "^4.28.1"
+  },
+  "files": [
+    "dist"
+  ],
   "keywords": [
     "vite",
     "plugin",

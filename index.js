@@ -10,32 +10,50 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
  * vite-plugin-i18n-check
  *
  * Vite 插件：在 vite dev 启动时自动完成两件事：
- *  1. 将插件配置同步写入项目 package.json 的 i18nCheck 字段
+ *  1. 首次初始化：将插件选项作为种子写入 package.json[i18nCheck]
+ *     （该字段已存在时跳过，不覆盖，以避免团队协作冲突）
  *  2. 安装 Husky pre-commit 钩子（已存在则跳过）
  *
- * check-i18n.js 读取 package.json[i18nCheck] 作为默认配置，
- * npm 脚本 / pre-commit 钩子 / CLI 三种调用方式均共享同一份配置。
+ * ┌─────────────────────────────────────────────────────────┐
+ * │                                                         │
+ * │  vite.config.js 的插件选项仅在首次初始化时作为「种子」     │
+ * │  写入 package.json。此后所有配置变更请直接修改             │
+ * │  package.json[i18nCheck]，插件不会再覆盖该字段。          │ 
+ * │                                                         │
+ * │  check-i18n.js 配置优先级：                              │
+ * │    CLI 参数 > package.json[i18nCheck] > 内置默认值       │
+ * └─────────────────────────────────────────────────────────┘
  *
  * @param {object}          [options]
+ * @param {boolean}         [options.enabled=true]
+ *   是否启用插件。设为 false 时插件完全静默，不初始化配置、不安装钩子。
+ *   常用于按环境控制：如仅在本地开发时启用，CI 环境关闭。
+ *   注意：该选项为运行时控制项，不会写入 package.json[i18nCheck]。
  * @param {string}          [options.languageDir='src/utils/language']
- *   语言文件目录（相对项目根）
+ *   语言文件目录（相对项目根）。仅在 package.json[i18nCheck] 不存在时生效。
  * @param {string}          [options.reportFile='untranslated-i18n.json']
- *   未翻译词条 JSON 报告文件名
+ *   未翻译词条 JSON 报告文件名。仅在 package.json[i18nCheck] 不存在时生效。
  * @param {string|string[]} [options.includeDirs=[]]
- *   只扫描的目录白名单，不配置则扫描全部
+ *   只扫描的目录白名单，不配置则扫描全部。仅在首次初始化时生效。
  * @param {string|string[]} [options.excludeDirs=[]]
- *   排除的目录黑名单，优先级高于 includeDirs
+ *   排除的目录黑名单，优先级高于 includeDirs。仅在首次初始化时生效。
+ * @param {string}          [options.scriptI18nFn='t']
+ *   script 块 / JS 文件中自动替换时使用的函数名。仅在首次初始化时生效。
+ *   Vue 3 Composition API 通常为 't'（useI18n 解构）；
+ *   Vue 2 或手动导入独立函数的项目可设为 '$t'。
  */
 export default function vitePluginI18nCheck(options = {}) {
   const {
+    enabled = true,
     languageDir = 'src/utils/language',
     reportFile = 'untranslated-i18n.json',
     includeDirs = [],
     excludeDirs = [],
+    scriptI18nFn = 't',
   } = options
 
   let rootDir = process.cwd()
-  let hookInstalled = false
+  let initialized = false
 
   return {
     name: 'vite-plugin-i18n-check',
@@ -46,19 +64,21 @@ export default function vitePluginI18nCheck(options = {}) {
     },
 
     buildStart() {
-      const cfg = {
+      if (!enabled) return
+      // 每次进程内只执行一次（防止 HMR 触发的重复调用）
+      if (initialized) return
+      initialized = true
+
+      // 仅在 package.json[i18nCheck] 不存在时写入种子配置
+      const seedCfg = {
         languageDir,
         reportFile,
         includeDirs: [].concat(includeDirs),
         excludeDirs: [].concat(excludeDirs),
+        scriptI18nFn,
       }
+      initPkgConfig(rootDir, seedCfg)
 
-      // 每次 vite dev 启动都将配置同步到 package.json[i18nCheck]
-      syncPkgConfig(rootDir, cfg)
-
-      // 钩子只安装一次
-      if (hookInstalled) return
-      hookInstalled = true
       try {
         setupHuskyHook(rootDir)
       } catch (err) {
@@ -68,13 +88,17 @@ export default function vitePluginI18nCheck(options = {}) {
   }
 }
 
-// ─── 配置同步 ─────────────────────────────────────────────────────────────────
 
 /**
- * 将插件配置写入项目 package.json[i18nCheck]。
- * package.json 随仓库提交，团队成员无需运行 vite dev 即可读到最新配置。
+ * 首次初始化：仅当 package.json[i18nCheck] 字段不存在时，将种子配置写入。
+ *
+ * 设计原则：package.json[i18nCheck] 是配置的唯一来源。
+ *   - 该字段不存在 → 以 vite.config.js 插件选项为种子写入，完成一次性初始化。
+ *   - 该字段已存在 → 跳过，不做任何修改，避免覆盖团队共享配置。
+ *
+ * 初始化完成后，所有配置变更请直接修改 package.json[i18nCheck]。
  */
-function syncPkgConfig(rootDir, cfg) {
+function initPkgConfig(rootDir, seedCfg) {
   const pkgPath = path.join(rootDir, 'package.json')
   if (!existsSync(pkgPath)) return
 
@@ -85,15 +109,18 @@ function syncPkgConfig(rootDir, cfg) {
     return
   }
 
-  // 内容未变化时跳过，避免触发不必要的文件变更
-  if (JSON.stringify(pkg.i18nCheck) === JSON.stringify(cfg)) return
+  // 已有配置：package.json[i18nCheck] 是唯一配置来源，跳过不覆盖
+  if (pkg.i18nCheck) {
+    console.log('[vite-plugin-i18n-check] 读取 package.json[i18nCheck] 配置，vite.config.js 中的选项已忽略。')
+    return
+  }
 
-  pkg.i18nCheck = cfg
+  // 首次初始化：将插件选项作为种子写入
+  pkg.i18nCheck = seedCfg
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8')
-  console.log('[vite-plugin-i18n-check] package.json[i18nCheck] 已同步。')
+  console.log('[vite-plugin-i18n-check] 已初始化 package.json[i18nCheck]，后续请直接修改该字段进行配置。')
 }
 
-// ─── Husky 钩子安装 ───────────────────────────────────────────────────────────
 
 /**
  * 安装 Husky 并写入 pre-commit 钩子脚本。
