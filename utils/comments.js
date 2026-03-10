@@ -7,7 +7,7 @@
  * 去除 HTML 注释（<!-- ... -->），用等长空格填充，保持位置信息不变。
  */
 export function removeHtmlComments(content) {
-  return content.replace(/<!--[\s\S]*?-->/g, match => ' '.repeat(match.length))
+  return content.replace(/<!--[\s\S]*?-->/g, match => match.replace(/[^\n]/g, ' '))
 }
 
 /**
